@@ -3,6 +3,7 @@ import sys
 from telegram.ext import CommandHandler
 from telegram.ext import MessageHandler, Filters
 from telegram.ext import Updater
+from telegram.ext.dispatcher import run_async
 
 import config
 import jenkins
@@ -31,10 +32,13 @@ def refresh():
     init()
 
 
-def isAllowedUsers(username):
+def isAllowedUsers(bot, update):
+    username = update.message.from_user.username
     if username in config.allowed_users:
         return True
     else:
+        s = 'Invalid User: ' + ' [' + username + ']'
+        bot.sendMessage(update.message.chat_id, text=s)
         return False
 
 
@@ -46,27 +50,49 @@ def isValidJobName(jobName):
     return False
 
 
-def listJobs():
+@run_async
+def listJobs(bot, update):
+    if not isAllowedUsers(bot, update):
+        return
+    s = 'job list'
+
     running_builds = server.get_running_builds()
     for job in jobs:
         state = 'idle'
         for r in running_builds:
             if r['name'] == job['fullname']:
                 state = 'running#%d' % r['number']
-        print '%s: %s' % (job['fullname'], state)
+        s = '\n'.join([s, '%s: %s' % (job['fullname'], state)])
+
+    print s
+    bot.sendMessage(update.message.chat_id, text=s)
 
 
-def startBuildJob(jobName):
+@run_async
+def startBuildJob(bot, update, args):
+    if not isAllowedUsers(bot, update):
+        return
+    if args:
+        jobName = args[0]
+    else:
+        jobName = ''
+
     if not isValidJobName(jobName):
-        return False, strings.INVALID_JOB_NAME
+        bot.sendMessage(update.message.chat_id, text=strings.INVALID_JOB_NAME)
+        return
 
     if not isAlreadyBuilding(jobName):
         print 'building ' + jobName
         server.build_job(jobName)
-        return True, 'building ' + jobName
+        s = 'start building ' + jobName
+        print s
+        bot.sendMessage(update.message.chat_id, text=s)
+        return
     else:
-        print jobName + string.ALREADY_BUILD
-        return False, jobName + string.ALREADY_BUILD
+        s = jobName + string.ALREADY_BUILD
+        print s
+        bot.sendMessage(update.message.chat_id, text=s)
+        return
 
 
 def isAlreadyBuilding(jobName):
@@ -77,21 +103,69 @@ def isAlreadyBuilding(jobName):
     return False
 
 
-def stopBuildJob(jobName):
+@run_async
+def stopBuildJob(bot, update, args):
+    if not isAllowedUsers(bot, update):
+        return
+    if args:
+        jobName = args[0]
+    else:
+        jobName = ''
+
     if not isValidJobName(jobName):
-        return False, strings.INVALID_JOB_NAME
+        bot.sendMessage(update.message.chat_id, text=strings.INVALID_JOB_NAME)
+        return
 
     running_builds = server.get_running_builds()
     for r in running_builds:
         if r['name'] == jobName:
-            print 'stop %s#%d, %s' % (r['name'], r['number'], r['url'])
+            s = 'stop %s#%d, %s' % (r['name'], r['number'], r['url'])
+            print s
             server.stop_build(jobName, r['number'])
-            return True, 'stop %s#%d, %s' % (r['name'], r['number'], r['url'])
+            bot.sendMessage(update.message.chat_id, text=s)
+            return
 
-    print jobName + strings.NO_JOB_BUILDING
-    return False, jobName + strings.NO_JOB_BUILDING
+    s = jobName + strings.NO_JOB_BUILDING
+    print s
+    bot.sendMessage(update.message.chat_id, text=s)
 
+
+def error(bot, update, error):
+    print 'Update "%s" caused error "%s"' % (update, error)
+
+
+def help(bot, update):
+    s = '\n'.join(
+            ['/help # get help', '/list #list all jobs',
+                '/build jobName # start build jobName',
+                '/stop jobName # stop build jobName'])
+    bot.sendMessage(update.message.chat_id, text=s)
+
+
+def main():
+    # init jenkins
+    init(config.jenkins_url, config.jenkins_username, config.jenkins_token)
+    # Create the EventHandler and pass it your bot's token
+    updater = Updater(config.telegram_bot_token)
+    # Get the dispatcher to register handlers
+    dp = updater.dispatcher
+
+    # add command handlers
+    dp.add_handler(CommandHandler("help", help))
+    dp.add_handler(CommandHandler("list", listJobs))
+    dp.add_handler(CommandHandler("build", startBuildJob, pass_args=True))
+    dp.add_handler(CommandHandler("stop", stopBuildJob, pass_args=True))
+
+    # log all errors
+    dp.add_error_handler(error)
+
+    # start bot
+    updater.start_polling()
+
+    # Run the bot until the you presses Ctrl-C or the process receives SIGINT,
+    # SIGTERM or SIGABRT. This should be used most of the time, since
+    # start_polling() is non-blocking and will stop the bot gracefully.
+    updater.idle()
 
 if __name__ == '__main__':
-    init(config.jenkins_url, config.jenkins_username, config.jenkins_token)
-    listJobs()
+    main()
